@@ -1,0 +1,291 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>C08 · Routing Events to the Right Handler</title><link rel="stylesheet" href="/student.css"><link rel="stylesheet" href="/code-highlighting.css"></head><body><main class="student-shell"><div class="student-brand"><a href="/">How <span>Claude Managed Agents</span> Works</a><span class="student-badge">CONCEPT 08 / 60</span></div><div class="student-hero"><div><div class="student-eyebrow">STUDENT APPLICATION GUIDE</div><h1>Routing Events to the Right Handler</h1><p>Understand the concepts, follow the source code, and verify the application yourself.</p></div><img src="/astronaut.png" alt=""></div><nav class="student-nav" aria-label="Application sections"><a href="/guide.html#learning">What you will learn</a><a href="/guide.html#run-guide">How to run</a><a href="/architecture.html">Architecture &amp; workflow</a><a href="/#application-lab">Application lab</a><button id="student-theme-toggle" type="button" aria-pressed="false">Switch to dark mode</button></nav><section class="student-section"><h2>Step 0 · Prepare the application before the workflow</h2><p>Use your own Anthropic API key and an existing agent ID and environment ID.</p><p>For the optional live path, set your API key, then run <code>npm run setup</code> if you do not already have resource IDs. The script creates the environment before a text-only agent, saves each ID immediately, and reuses IDs already configured. It uses CLAUDE_MODEL or the source default; choose a model available to your account. An uncertain network failure may have created a resource: inspect your account before retrying.</p><pre><code class="language-powershell">npm ci
+Copy-Item .env.example .env
+npm start</code></pre><p>Set these prerequisites before starting. Credentials stay on the server and are never bundled into the browser.</p><p class="student-source">Source: .env.example · starting at line 1</p><pre><code class="language-dotenv">ANTHROPIC_API_KEY=your_api_key
+CLAUDE_MANAGED_AGENT_ID=your_agent_id
+CLAUDE_MANAGED_ENVIRONMENT_ID=your_environment_id
+PORT=3008</code></pre><p>Optional prerequisite: create_environment runs before create_agent. Missing IDs are saved in .env; configured IDs are reused. This step is separate from each runtime experiment.</p><p class="student-source">Source: scripts/setup-resources.mts · starting at line 1</p><pre><code class="language-typescript">/** Optional one-time provisioning. Reuses IDs already present in .env. */
+import Anthropic from &quot;@anthropic-ai/sdk&quot;;
+import { existsSync, readFileSync, writeFileSync } from &quot;node:fs&quot;;
+if (
+  !process.env.ANTHROPIC_API_KEY ||
+  process.env.ANTHROPIC_API_KEY.startsWith(&quot;your_&quot;)
+) {
+  throw new Error(&quot;Set your own ANTHROPIC_API_KEY in .env first.&quot;);
+}
+const client = new Anthropic({ maxRetries: 0 });
+let contents = existsSync(&quot;.env&quot;) ? readFileSync(&quot;.env&quot;, &quot;utf8&quot;) : &quot;&quot;;
+function save(key: string, value: string) {
+  const pattern = new RegExp(&quot;^\\s*&quot; + key + &quot;=.*$&quot;, &quot;m&quot;);
+  contents = pattern.test(contents)
+    ? contents.replace(pattern, key + &quot;=&quot; + value)
+    : contents.trimEnd() + &quot;\n&quot; + key + &quot;=&quot; + value + &quot;\n&quot;;
+  writeFileSync(&quot;.env&quot;, contents, { mode: 0o600 });
+}
+const valid = (value: string | undefined) =&gt;
+  Boolean(value &amp;&amp; !value.startsWith(&quot;your_&quot;));
+if (!valid(process.env.CLAUDE_MANAGED_ENVIRONMENT_ID)) {
+  const environment = await client.beta.environments.create({
+    name: &quot;C08 student environment&quot;,
+    config: { type: &quot;cloud&quot;, networking: { type: &quot;limited&quot; } },
+  });
+  // Save immediately so a later agent failure does not lose the environment ID.
+  save(&quot;CLAUDE_MANAGED_ENVIRONMENT_ID&quot;, environment.id);
+}
+if (!valid(process.env.CLAUDE_MANAGED_AGENT_ID)) {
+  const agent = await client.beta.agents.create({
+    name: &quot;C08 text-only student agent&quot;,
+    model: process.env.CLAUDE_MODEL || &quot;claude-opus-5-5&quot;,
+    system: &quot;Answer the student&#x27;s question clearly and briefly.&quot;,
+    tools: [],
+    mcp_servers: [],
+    skills: [],
+  });
+  save(&quot;CLAUDE_MANAGED_AGENT_ID&quot;, agent.id);
+}
+console.log(
+  &quot;Prerequisite IDs are saved in your local .env. Existing configured IDs were reused.&quot;,
+);</code></pre></section><section class="student-section"><h2>UML sequence diagram</h2><p>Read from top to bottom. Columns are participants; arrows are ordered messages. Open the full-size image or scroll horizontally to read every label.</p><p><a href="/architecture.svg" target="_blank" rel="noopener">Open SVG</a> · <a href="/architecture.svg" download>Download SVG</a> · <a href="/architecture.png" download>Download PNG</a></p><div class="student-diagram"><img src="/architecture.svg" alt="UML sequence diagram showing the actual lesson application workflow"></div></section><section class="student-section"><h2>Walk through the application step by step</h2><article class="student-step"><h3>1 · Submit the browser request · part 1</h3><p>The browser sends a same-origin request and updates the visible evidence. It never receives the API key.</p><p class="student-source">Source: public/app.js · starting at line 1</p><pre><code class="language-javascript">const $ = (s) =&gt; document.querySelector(s),
+  button = $(&quot;#run&quot;),
+  status = $(&quot;#status&quot;);
+fetch(&quot;/api/config&quot;)
+  .then((r) =&gt; r.json())
+  .then((c) =&gt; {
+    button.disabled = !c.configured;
+    status.textContent = c.configured
+      ? &quot;Configuration ready. Credentials stay on the server.&quot;
+      : &quot;Configure your API key and resource IDs in .env.&quot;;
+  })
+  .catch(() =&gt; {
+    status.textContent = &quot;Could not check configuration.&quot;;
+  });
+button.addEventListener(&quot;click&quot;, async () =&gt; {
+  const prompt = $(&quot;#prompt&quot;).value.trim();
+  if (!prompt) {
+    status.textContent = &quot;Enter a prompt.&quot;;
+    return;
+  }
+  button.disabled = true;
+  status.textContent = &quot;Creating session…&quot;;
+  $(&quot;#empty&quot;).hidden = true;
+  $(&quot;#result&quot;).hidden = false;
+  $(&quot;#session&quot;).textContent = &quot;—&quot;;
+  $(&quot;#stop&quot;).textContent = &quot;Waiting for evidence&quot;;
+  $(&quot;#events&quot;).replaceChildren();
+  let stopped = false,
+    failed = false;
+  const handle = ({ type, value }) =&gt; {
+    if (type === &quot;session&quot;) {
+      $(&quot;#session&quot;).textContent = value;
+      status.textContent = &quot;Routing live events…&quot;;
+    } else if (type === &quot;route&quot;) {
+      const li = document.createElement(&quot;li&quot;),
+        tag = document.createElement(&quot;span&quot;),
+        detail = document.createElement(&quot;details&quot;),
+        summary = document.createElement(&quot;summary&quot;),
+        pre = document.createElement(&quot;pre&quot;);
+      tag.className = &quot;tag&quot;;
+      tag.textContent = value.sink;
+      li.append(tag, document.createTextNode(value.event.type));
+      summary.textContent = &quot;Inspect event&quot;;
+      pre.textContent = JSON.stringify(value.event, null, 2);
+      detail.append(summary, pre);
+      li.append(detail);
+      $(&quot;#events&quot;).append(li);
+    } else if (type === &quot;stop&quot;) {
+      stopped = true;
+      $(&quot;#stop&quot;).textContent = value;
+      status.textContent = &quot;Observation finished.&quot;;
+    } else if (type === &quot;error&quot;) {
+      failed = true;
+      $(&quot;#stop&quot;).textContent = &quot;Error; outcome unconfirmed&quot;;
+      status.textContent = value;
+    }
+  };
+  try {
+    const r = await fetch(&quot;/api/run&quot;, {
+      method: &quot;POST&quot;,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!r.ok) {
+      const d = await r.json();
+      throw new Error(d.error || &quot;Request failed&quot;);
+    }
+    const reader = r.body.getReader(),
+      decoder = new TextDecoder();
+    let pending = &quot;&quot;;
+    while (true) {
+      const { value, done } = await reader.read();
+      pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = pending.split(&quot;\n&quot;);
+      pending = lines.pop();
+      for (const line of lines) if (line) handle(JSON.parse(line));
+      if (done) break;
+    }
+    if (pending.trim()) handle(JSON.parse(pending));
+    if (!stopped &amp;&amp; !failed) {
+      $(&quot;#stop&quot;).textContent = &quot;Incomplete&quot;;
+      status.textContent = &quot;Stream ended without a terminal event.&quot;;
+    }
+  } catch (e) {
+    status.textContent = e.message;
+    $(&quot;#stop&quot;).textContent = &quot;Error; outcome unconfirmed&quot;;
+  } finally {
+    button.disabled = false;
+  }
+});</code></pre></article><article class="student-step"><h3>2 · Execute the provider workflow · part 1</h3><p>The Node host validates input, uses configured resources, and returns observable evidence. Read the stream ordering and failure branches.</p><p class="student-source">Source: src/server.ts · starting at line 1</p><pre><code class="language-typescript">import { serveStudentAsset } from &quot;./student-assets&quot;;
+import http from &quot;node:http&quot;;
+import { readFile } from &quot;node:fs/promises&quot;;
+import { existsSync } from &quot;node:fs&quot;;
+import path from &quot;node:path&quot;;
+import Anthropic from &quot;@anthropic-ai/sdk&quot;;
+import { createRouter, type RoutedEvent } from &quot;./router&quot;;
+if (existsSync(&quot;.env&quot;)) process.loadEnvFile(&quot;.env&quot;);
+const port = Number(process.env.PORT || 3008),
+  key = process.env.ANTHROPIC_API_KEY || &quot;&quot;,
+  agent = process.env.CLAUDE_MANAGED_AGENT_ID || &quot;&quot;,
+  environment = process.env.CLAUDE_MANAGED_ENVIRONMENT_ID || &quot;&quot;;
+const configured = [key, agent, environment].every((v) =&gt; v &amp;&amp; !v.startsWith(&quot;your_&quot;));
+http
+  .createServer(async (req, res) =&gt; {
+    res.setHeader(&quot;Cache-Control&quot;, &quot;no-store&quot;);
+    try {
+      if (await serveStudentAsset(req, res)) return;
+      if (req.method === &quot;GET&quot; &amp;&amp; req.url === &quot;/api/config&quot;) {
+        res.writeHead(200, { &quot;Content-Type&quot;: &quot;application/json&quot; });
+        res.end(JSON.stringify({ configured }));
+        return;
+      }
+      if (req.method === &quot;POST&quot; &amp;&amp; req.url === &quot;/api/run&quot;) {
+        const origin = req.headers.origin;
+        if (
+          origin &amp;&amp;
+          origin !== `http://127.0.0.1:${port}` &amp;&amp;
+          origin !== `http://localhost:${port}`
+        ) {
+          res.writeHead(403).end();
+          return;
+        }
+        let raw = &quot;&quot;;
+        for await (const chunk of req) {
+          raw += chunk;
+          if (raw.length &gt; 10000) throw new Error(&quot;Request too large&quot;);
+        }
+        const body = JSON.parse(raw || &quot;{}&quot;);
+        if (
+          typeof body.prompt !== &quot;string&quot; ||
+          !body.prompt.trim() ||
+          body.prompt.length &gt; 2000
+        )
+          throw new Error(&quot;Enter a prompt of up to 2,000 characters.&quot;);
+        if (!configured) throw new Error(&quot;Configure the API key and IDs in .env.&quot;);
+        res.writeHead(200, { &quot;Content-Type&quot;: &quot;application/x-ndjson; charset=utf-8&quot; });
+        const send = (type: string, value: unknown) =&gt; {
+          if (!res.destroyed) res.write(JSON.stringify({ type, value }) + &quot;\n&quot;);
+        };
+        try {
+          const client = new Anthropic({ apiKey: key }),
+            session = await client.beta.sessions.create({
+              agent,
+              environment_id: environment,
+              budget: {
+                type: &quot;limit&quot;,
+                max_list_cost: { amount: &quot;50&quot;, currency: &quot;USD&quot; },
+              },
+            });
+          send(&quot;session&quot;, session.id);
+          const stream = await client.beta.sessions.events.stream(session.id);
+          res.on(&quot;close&quot;, () =&gt; stream.controller.abort());
+          await client.beta.sessions.events.send(session.id, {
+            events: [
+              {
+                type: &quot;user.message&quot;,
+                content: [{ type: &quot;text&quot;, text: body.prompt.trim() }],
+              },
+            ],
+          });
+          const route = createRouter();
+          for await (const event of stream) {
+            await route(event as unknown as RoutedEvent, (sink, e) =&gt;
+              send(&quot;route&quot;, { sink, event: e }),
+            );
+            if (event.type === &quot;session.status_idle&quot;) {
+              send(&quot;stop&quot;, event.stop_reason.type);
+              break;
+            }
+            if (event.type === &quot;session.status_terminated&quot;) {
+              send(&quot;stop&quot;, &quot;terminated&quot;);
+              break;
+            }
+            if (event.type === &quot;session.error&quot;) {
+              send(&quot;error&quot;, &quot;Provider reported a session error.&quot;);
+              break;
+            }
+          }
+        } catch (error) {
+          send(&quot;error&quot;, error instanceof Error ? error.message : &quot;Run failed&quot;);
+        }
+        res.end();
+        return;
+      }
+      const files: Record&lt;string, string&gt; = {
+        &quot;/&quot;: &quot;index.html&quot;,
+        &quot;/style.css&quot;: &quot;style.css&quot;,
+        &quot;/app.js&quot;: &quot;app.js&quot;,
+        &quot;/astronaut.png&quot;: &quot;astronaut.png&quot;,
+      };
+      if (req.method === &quot;GET&quot; &amp;&amp; req.url &amp;&amp; files[req.url]) {
+        const f = files[req.url],
+          data = await readFile(path.join(__dirname, &quot;..&quot;, &quot;public&quot;, f));
+        res.writeHead(200, {
+          &quot;Content-Type&quot;: f.endsWith(&quot;.png&quot;)
+            ? &quot;image/png&quot;
+            : f.endsWith(&quot;.css&quot;)
+              ? &quot;text/css&quot;
+              : f.endsWith(&quot;.js&quot;)
+                ? &quot;text/javascript&quot;
+                : &quot;text/html; charset=utf-8&quot;,
+        });
+        res.end(data);
+        return;
+      }
+      res.writeHead(404).end(&quot;Not found&quot;);
+    } catch (error) {
+      if (!res.headersSent) res.writeHead(400, { &quot;Content-Type&quot;: &quot;application/json&quot; });
+      res.end(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : &quot;Request failed&quot;,
+        }),
+      );
+    }
+  })
+  .listen(port, &quot;127.0.0.1&quot;, () =&gt; console.log(`Open http://127.0.0.1:${port}`));</code></pre></article><article class="student-step"><h3>3 · Understand the lesson-specific rules · part 1</h3><p>Runs a real session through a local event router. Action events are displayed, not executed or approved. Deduplication is scoped to one run.</p><p class="student-source">Source: src/router.ts · starting at line 1</p><pre><code class="language-typescript">export type RoutedEvent = {
+  type: string;
+  id?: string;
+  evaluated_permission?: string;
+  [key: string]: unknown;
+};
+export type Sink = &quot;preview&quot; | &quot;text&quot; | &quot;action&quot; | &quot;usage&quot; | &quot;lifecycle&quot;;
+export function createRouter() {
+  const seen = new Set&lt;string&gt;();
+  return async (
+    event: RoutedEvent,
+    dispatch: (sink: Sink, event: RoutedEvent) =&gt; Promise&lt;void&gt; | void,
+  ) =&gt; {
+    if (event.type === &quot;event_start&quot; || event.type === &quot;event_delta&quot;) {
+      await dispatch(&quot;preview&quot;, event);
+      return;
+    }
+    if (event.id &amp;&amp; seen.has(event.id)) return;
+    let sink: Sink = &quot;lifecycle&quot;;
+    if (event.type === &quot;agent.message&quot;) sink = &quot;text&quot;;
+    else if (
+      event.type === &quot;agent.custom_tool_use&quot; ||
+      event.evaluated_permission === &quot;ask&quot;
+    )
+      sink = &quot;action&quot;;
+    else if (event.type === &quot;span.model_request_end&quot;) sink = &quot;usage&quot;;
+    await dispatch(sink, event);
+    if (event.id) seen.add(event.id);
+  };
+}</code></pre></article></section><section class="student-section"><h2>What the evidence proves</h2><p class="student-note">Runs a real session through a local event router. Action events are displayed, not executed or approved. Deduplication is scoped to one run.</p><p>Check the displayed outcome and source together. A rendered answer alone does not prove that a tool ran, a remote operation succeeded, or work was cancelled.</p></section><footer>LESSON C08 · LEARN → CONFIGURE → RUN → VERIFY<p><a href="/guide.html#learning">Learning goals</a> · <a href="/guide.html#run-guide">Run instructions</a> · <a href="/architecture.html">Workflow</a> · <a href="/#application-lab">Lab</a></p></footer></main><script src="/navigation.js"></script><script defer src="/prism.js"></script><script defer src="/code-highlighting.js"></script></body></html>

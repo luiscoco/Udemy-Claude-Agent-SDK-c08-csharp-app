@@ -1,0 +1,134 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using System.Text.Json
+@using LessonC08.App.Lab
+@inject LabOptions Options
+@inject SessionRunner Runner
+@implements IDisposable
+
+<PageTitle>Event Routing · Lesson C08</PageTitle>
+
+<header><div class="wrap top"><div class="brand">How <span>Claude Managed Agents</span> Works</div><span class="badge">CONCEPT 08 / 60</span></div></header>
+<main class="wrap">
+    <section id="application-lab" aria-label="Application navigation">
+        <nav class="student-nav" aria-label="Application sections">
+            <a href="/guide.html#learning">What you will learn</a>
+            <a href="/guide.html#run-guide">How to run</a>
+            <a href="/architecture.html">Architecture &amp; workflow</a>
+            <a href="/#application-lab" aria-current="location">Application lab</a>
+            <button id="student-theme-toggle" type="button" aria-pressed="false">Switch to dark mode</button>
+        </nav>
+    </section>
+
+    <div class="intro">
+        <div>
+            <p class="eyebrow">CLAUDE MANAGED AGENTS / LESSON 08</p>
+            <h1>One event stream.<br><em>Different destinations.</em></h1>
+            <p class="lead">Observe a live session and route previews, messages, actions, usage, and lifecycle events to their own categories.</p>
+        </div>
+        <div class="orb"><img src="/astronaut.png" alt=""><small>LESSON C08<br>EVENT ROUTING</small></div>
+    </div>
+
+    <section class="flow">
+        <div><b>01</b><span><strong>Observe</strong><small>Open a live stream</small></span></div><i>→</i>
+        <div><b>02</b><span><strong>Route</strong><small>Classify each event</small></span></div><i>→</i>
+        <div><b>03</b><span><strong>Inspect</strong><small>Compare destinations</small></span></div>
+    </section>
+
+    <section class="grid">
+        <article class="card">
+            <p class="eyebrow">THE EXPERIMENT</p>
+            <h2>Route a live stream</h2>
+            <p>Each run creates a remote session with a 50-cent list-cost budget. Action requests are displayed for inspection and are not approved or executed by this sample.</p>
+            <label for="prompt">Your prompt</label>
+            <textarea id="prompt" rows="3" maxlength="2000" @bind="prompt" @bind:event="oninput"></textarea>
+            <button id="run" disabled="@(!Options.Configured || running)" @onclick="RunAsync">Start and route events <span>↗</span></button>
+            <p id="status" role="status">@status</p>
+        </article>
+
+        <article class="card results">
+            <div class="resulthead">
+                <div><p class="eyebrow">ROUTED EVIDENCE</p><h2>Inspect the stream</h2></div>
+                <span class="live">● LIVE API</span>
+            </div>
+            @if (!started)
+            {
+                <p id="empty">Routed events will appear here.</p>
+            }
+            else
+            {
+                <div id="result">
+                    <div class="data"><span>SESSION ID</span><code id="session">@sessionId</code></div>
+                    <div class="data"><span>STOP REASON</span><code id="stop">@stopReason</code></div>
+                    <ul id="events" class="events">
+                        @foreach (var (sink, evt) in events)
+                        {
+                            <li>
+                                <span class="tag">@sink.ToString().ToLowerInvariant()</span>@EventRouter.ReadString(evt, "type")
+                                <details><summary>Inspect event</summary><pre>@JsonSerializer.Serialize(evt, Indented)</pre></details>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            }
+        </article>
+    </section>
+
+    <div class="guide"><strong>Preview before deduplication.</strong> Preview envelopes can share a target ID, while persisted events can be deduplicated by their own ID. Usage comes from provider records. A routed action is not an approval, and closing the page does not stop remote work.</div>
+    <footer>LESSON C08 <span>·</span> OBSERVE → ROUTE → INSPECT</footer>
+</main>
+
+@code {
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    private readonly CancellationTokenSource disposed = new();
+    private readonly List<(Sink Sink, JsonElement Event)> events = [];
+    private string prompt = "Explain why events should be routed by type in one sentence.";
+    private string status = "";
+    private string sessionId = "—";
+    private string stopReason = "Waiting for evidence";
+    private bool started, running;
+
+    protected override void OnInitialized() =>
+        status = Options.Configured
+            ? "Configuration ready. Credentials stay on the server."
+            : "Configure your API key and resource IDs in .env.";
+
+    private async Task RunAsync()
+    {
+        var text = prompt.Trim();
+        if (text.Length == 0 || text.Length > 2000) { status = "Enter a prompt of up to 2,000 characters."; return; }
+
+        running = started = true;
+        status = "Creating session…";
+        sessionId = "—";
+        stopReason = "Waiting for evidence";
+        events.Clear();
+        bool finished = false;
+
+        await Runner.RunAsync(text, async update =>
+        {
+            switch (update)
+            {
+                case RunUpdate.SessionStarted s: sessionId = s.SessionId; status = "Routing live events…"; break;
+                case RunUpdate.Routed r: events.Add((r.Sink, r.Event)); break;
+                case RunUpdate.Stopped s: finished = true; stopReason = s.Reason; status = "Observation finished."; break;
+                case RunUpdate.Failed f: finished = true; stopReason = "Error; outcome unconfirmed"; status = f.Message; break;
+            }
+            await InvokeAsync(StateHasChanged);
+        }, disposed.Token);
+
+        if (!finished && !disposed.IsCancellationRequested)
+        {
+            stopReason = "Incomplete";
+            status = "Stream ended without a terminal event.";
+        }
+        running = false;
+    }
+
+    public void Dispose()
+    {
+        disposed.Cancel();
+        disposed.Dispose();
+    }
+}
